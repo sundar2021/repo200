@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Azure Document Translator</title>
+  <script src="/_sdk/element_sdk.js"></script>
+  <script src="/_sdk/data_sdk.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+        body {
+            box-sizing: border-box;
+        }
+        
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 16px 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 1000;
+            animation: slideIn 0.3s ease-out;
+        }
+        
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        
+        .spinner {
+            border: 3px solid rgba(255,255,255,0.3);
+            border-top: 3px solid white;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 0.8s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+  <style>@view-transition { navigation: auto; }</style>
+ </head>
+ <body class="min-h-full">
+  <div id="app" class="min-h-full p-8">
+   <div class="max-w-4xl mx-auto">
+    <div class="text-center mb-8">
+     <h1 id="pageTitle" class="text-4xl font-bold mb-3">Azure Document Translator</h1>
+     <p id="descriptionText" class="text-xl">Translate documents using Azure AI</p>
+    </div>
+    <div class="rounded-lg shadow-lg p-8 mb-8">
+     <h2 class="text-2xl font-semibold mb-6">New Translation Job</h2>
+     <form id="translationForm" class="space-y-6">
+      <div><label for="apiKey" class="block text-sm font-medium mb-2">API Key</label> <input type="password" id="apiKey" required class="w-full px-4 py-3 rounded-lg border-2 focus:outline-none focus:ring-2" placeholder="Enter your Azure API key">
+      </div>
+      <div><label for="endpoint" class="block text-sm font-medium mb-2">Endpoint URL</label> <input type="url" id="endpoint" required class="w-full px-4 py-3 rounded-lg border-2 focus:outline-none focus:ring-2" placeholder="https://your-resource.cognitiveservices.azure.com/">
+      </div>
+      <div><label for="sourceUrl" class="block text-sm font-medium mb-2">Source Container URL</label> <input type="url" id="sourceUrl" required class="w-full px-4 py-3 rounded-lg border-2 focus:outline-none focus:ring-2" placeholder="https://storage.blob.core.windows.net/source">
+      </div>
+      <div><label for="targetUrl" class="block text-sm font-medium mb-2">Target Container URL (with SAS token)</label> <input type="url" id="targetUrl" required class="w-full px-4 py-3 rounded-lg border-2 focus:outline-none focus:ring-2" placeholder="https://storage.blob.core.windows.net/target?sp=...">
+      </div>
+      <div><label for="targetLanguage" class="block text-sm font-medium mb-2">Target Language Code</label> <select id="targetLanguage" required class="w-full px-4 py-3 rounded-lg border-2 focus:outline-none focus:ring-2"> <option value="">Select language</option> <option value="ta">Tamil (ta)</option> <option value="es">Spanish (es)</option> <option value="fr">French (fr)</option> <option value="de">German (de)</option> <option value="zh-Hans">Chinese Simplified (zh-Hans)</option> <option value="ja">Japanese (ja)</option> <option value="ko">Korean (ko)</option> <option value="ar">Arabic (ar)</option> <option value="hi">Hindi (hi)</option> <option value="pt">Portuguese (pt)</option> </select>
+      </div><button type="submit" id="submitBtn" class="w-full py-4 rounded-lg font-semibold text-lg transition-all duration-200 flex items-center justify-center gap-3"> <span id="submitBtnText">Start Translation</span>
+       <div id="submitSpinner" class="spinner hidden"></div></button>
+     </form>
+    </div>
+    <div id="resultsSection" class="rounded-lg shadow-lg p-8 mb-8 hidden">
+     <h2 class="text-2xl font-semibold mb-6">Translation Results</h2>
+     <div id="resultsOutput" class="font-mono text-sm p-6 rounded-lg overflow-x-auto whitespace-pre-wrap" style="background-color: #1e293b; color: #e2e8f0;">
+     </div>
+    </div>
+    <div id="historySection" class="rounded-lg shadow-lg p-8">
+     <h2 class="text-2xl font-semibold mb-6">Translation History</h2>
+     <div id="historyList" class="space-y-4">
+      <p class="text-center py-8">No translation jobs yet. Submit a job to get started!</p>
+     </div>
+    </div>
+   </div>
+  </div>
+  <script>
+        const defaultConfig = {
+            background_color: '#f0f4f8',
+            card_color: '#ffffff',
+            text_color: '#1e293b',
+            primary_button_color: '#3b82f6',
+            secondary_button_color: '#64748b',
+            font_family: 'system-ui',
+            font_size: 16,
+            page_title: 'Azure Document Translator',
+            description_text: 'Translate documents using Azure AI',
+            submit_button_text: 'Start Translation'
+        };
+
+        let translationJobs = [];
+
+        const dataHandler = {
+            onDataChanged(data) {
+                translationJobs = data;
+                renderHistory();
+            }
+        };
+
+        async function onConfigChange(config) {
+            const customFont = config.font_family || defaultConfig.font_family;
+            const baseFontStack = 'system-ui, -apple-system, sans-serif';
+            const baseSize = config.font_size || defaultConfig.font_size;
+            
+            document.body.style.backgroundColor = config.background_color || defaultConfig.background_color;
+            document.body.style.color = config.text_color || defaultConfig.text_color;
+            document.body.style.fontFamily = `${customFont}, ${baseFontStack}`;
+            document.body.style.fontSize = `${baseSize}px`;
+            
+            const cards = document.querySelectorAll('#translationForm').parentElement;
+            if (cards) {
+                cards.style.backgroundColor = config.card_color || defaultConfig.card_color;
+            }
+            
+            const historyCard = document.querySelector('#historySection');
+            if (historyCard) {
+                historyCard.style.backgroundColor = config.card_color || defaultConfig.card_color;
+            }
+            
+            const resultsCard = document.querySelector('#resultsSection');
+            if (resultsCard) {
+                resultsCard.style.backgroundColor = config.card_color || defaultConfig.card_color;
+            }
+            
+            const title = document.getElementById('pageTitle');
+            if (title) {
+                title.textContent = config.page_title || defaultConfig.page_title;
+                title.style.fontSize = `${baseSize * 2}px`;
+            }
+            
+            const description = document.getElementById('descriptionText');
+            if (description) {
+                description.textContent = config.description_text || defaultConfig.description_text;
+                description.style.fontSize = `${baseSize * 1.25}px`;
+            }
+            
+            const submitBtnText = document.getElementById('submitBtnText');
+            if (submitBtnText) {
+                submitBtnText.textContent = config.submit_button_text || defaultConfig.submit_button_text;
+            }
+            
+            const submitBtn = document.getElementById('submitBtn');
+            if (submitBtn) {
+                submitBtn.style.backgroundColor = config.primary_button_color || defaultConfig.primary_button_color;
+            }
+            
+            const labels = document.querySelectorAll('label');
+            labels.forEach(label => {
+                label.style.fontSize = `${baseSize * 0.875}px`;
+            });
+            
+            const inputs = document.querySelectorAll('input, select');
+            inputs.forEach(input => {
+                input.style.fontSize = `${baseSize}px`;
+                input.style.borderColor = config.secondary_button_color || defaultConfig.secondary_button_color;
+            });
+            
+            const headings = document.querySelectorAll('h2');
+            headings.forEach(h => {
+                h.style.fontSize = `${baseSize * 1.5}px`;
+            });
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = 'toast';
+            toast.style.backgroundColor = type === 'success' ? '#10b981' : '#ef4444';
+            toast.style.color = 'white';
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.remove();
+            }, 3000);
+        }
+
+        function renderHistory() {
+            const historyList = document.getElementById('historyList');
+            
+            if (translationJobs.length === 0) {
+                historyList.innerHTML = '<p class="text-center py-8">No translation jobs yet. Submit a job to get started!</p>';
+                return;
+            }
+            
+            const config = window.elementSdk?.config || defaultConfig;
+            const baseSize = config.font_size || defaultConfig.font_size;
+            
+            historyList.innerHTML = translationJobs
+                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+                .map(job => `
+                    <div class="border-2 rounded-lg p-6" style="border-color: ${config.secondary_button_color || defaultConfig.secondary_button_color}">
+                        <div class="flex justify-between items-start mb-4">
+                            <div>
+                                <span class="inline-block px-3 py-1 rounded-full text-sm font-semibold" 
+                                      style="background-color: ${job.status === 'Succeeded' ? '#10b981' : job.status === 'Failed' ? '#ef4444' : '#f59e0b'}; color: white; font-size: ${baseSize * 0.875}px">
+                                    ${job.status}
+                                </span>
+                                <p class="mt-2" style="font-size: ${baseSize * 0.875}px">
+                                    ${new Date(job.created_at).toLocaleString()}
+                                </p>
+                            </div>
+                            <button onclick="deleteJob('${job.__backendId}')" 
+                                    class="px-4 py-2 rounded-lg font-medium transition-colors"
+                                    style="background-color: ${config.secondary_button_color || defaultConfig.secondary_button_color}; color: white; font-size: ${baseSize * 0.875}px">
+                                Delete
+                            </button>
+                        </div>
+                        
+                        <div class="space-y-2" style="font-size: ${baseSize * 0.875}px">
+                            <p><strong>Target Language:</strong> ${job.target_language}</p>
+                            <p><strong>Total Documents:</strong> ${job.documents_total}</p>
+                            <p><strong>Succeeded:</strong> ${job.documents_succeeded}</p>
+                            <p><strong>Failed:</strong> ${job.documents_failed}</p>
+                            <details class="mt-3">
+                                <summary class="cursor-pointer font-medium">View URLs</summary>
+                                <div class="mt-2 space-y-1 pl-4">
+                                    <p class="break-all"><strong>Source:</strong> ${job.source_url}</p>
+                                    <p class="break-all"><strong>Target:</strong> ${job.target_url}</p>
+                                </div>
+                            </details>
+                        </div>
+                    </div>
+                `).join('');
+        }
+
+        async function deleteJob(backendId) {
+            const job = translationJobs.find(j => j.__backendId === backendId);
+            if (!job) return;
+            
+            const result = await window.dataSdk.delete(job);
+            if (result.isOk) {
+                showToast('Translation job deleted', 'success');
+            } else {
+                showToast('Failed to delete job', 'error');
+            }
+        }
+
+        async function simulateAzureTranslation(apiKey, endpoint, sourceUrl, targetUrl, targetLanguage) {
+            // Simulate API call delay
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Simulate translation results
+            const now = new Date();
+            const createdOn = now.toISOString();
+            const lastUpdated = new Date(now.getTime() + 5000).toISOString();
+            
+            const mockDocuments = [
+                {
+                    id: 'doc-' + Math.random().toString(36).substr(2, 9),
+                    status: 'Succeeded',
+                    source_document_url: sourceUrl + '/document1.pdf',
+                    translated_document_url: targetUrl.split('?')[0] + '/document1_' + targetLanguage + '.pdf',
+                    translated_to: targetLanguage
+                },
+                {
+                    id: 'doc-' + Math.random().toString(36).substr(2, 9),
+                    status: 'Succeeded',
+                    source_document_url: sourceUrl + '/document2.docx',
+                    translated_document_url: targetUrl.split('?')[0] + '/document2_' + targetLanguage + '.docx',
+                    translated_to: targetLanguage
+                }
+            ];
+            
+            const totalDocs = mockDocuments.length;
+            const succeededDocs = mockDocuments.filter(d => d.status === 'Succeeded').length;
+            const failedDocs = mockDocuments.filter(d => d.status === 'Failed').length;
+            
+            let output = `Status: Succeeded\n`;
+            output += `Created on: ${createdOn}\n`;
+            output += `Last updated on: ${lastUpdated}\n`;
+            output += `Total number of translations on documents: ${totalDocs}\n\n`;
+            output += `Of total documents...\n`;
+            output += `${failedDocs} failed\n`;
+            output += `${succeededDocs} succeeded\n\n`;
+            
+            mockDocuments.forEach(doc => {
+                output += `Document ID: ${doc.id}\n`;
+                output += `Document status: ${doc.status}\n`;
+                if (doc.status === 'Succeeded') {
+                    output += `Source document location: ${doc.source_document_url}\n`;
+                    output += `Translated document location: ${doc.translated_document_url}\n`;
+                    output += `Translated to language: ${doc.translated_to}\n\n`;
+                } else {
+                    output += `Error Code: ${doc.error?.code || 'N/A'}, Message: ${doc.error?.message || 'N/A'}\n\n`;
+                }
+            });
+            
+            return {
+                output,
+                totalDocs,
+                succeededDocs,
+                failedDocs,
+                status: 'Succeeded'
+            };
+        }
+
+        document.getElementById('translationForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            if (translationJobs.length >= 999) {
+                showToast('Maximum limit of 999 jobs reached. Please delete some jobs first.', 'error');
+                return;
+            }
+            
+            const submitBtn = document.getElementById('submitBtn');
+            const submitSpinner = document.getElementById('submitSpinner');
+            const submitBtnText = document.getElementById('submitBtnText');
+            const resultsSection = document.getElementById('resultsSection');
+            const resultsOutput = document.getElementById('resultsOutput');
+            
+            submitBtn.disabled = true;
+            submitSpinner.classList.remove('hidden');
+            submitBtnText.textContent = 'Processing...';
+            
+            const apiKey = document.getElementById('apiKey').value;
+            const endpoint = document.getElementById('endpoint').value;
+            const sourceUrl = document.getElementById('sourceUrl').value;
+            const targetUrl = document.getElementById('targetUrl').value;
+            const targetLanguage = document.getElementById('targetLanguage').value;
+            
+            try {
+                // Simulate Azure translation
+                const translationResult = await simulateAzureTranslation(
+                    apiKey, endpoint, sourceUrl, targetUrl, targetLanguage
+                );
+                
+                // Display results
+                resultsOutput.textContent = translationResult.output;
+                resultsSection.classList.remove('hidden');
+                
+                // Scroll to results
+                resultsSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                
+                // Save to history
+                const formData = {
+                    id: Date.now().toString(),
+                    source_url: sourceUrl,
+                    target_url: targetUrl,
+                    target_language: targetLanguage,
+                    status: translationResult.status,
+                    created_at: new Date().toISOString(),
+                    documents_total: translationResult.totalDocs,
+                    documents_succeeded: translationResult.succeededDocs,
+                    documents_failed: translationResult.failedDocs
+                };
+                
+                const result = await window.dataSdk.create(formData);
+                
+                if (result.isOk) {
+                    showToast('Translation completed successfully!', 'success');
+                    document.getElementById('translationForm').reset();
+                } else {
+                    showToast('Translation completed but failed to save to history', 'error');
+                }
+            } catch (error) {
+                showToast('Translation failed: ' + error.message, 'error');
+                resultsOutput.textContent = 'Error: ' + error.message;
+                resultsSection.classList.remove('hidden');
+            } finally {
+                submitBtn.disabled = false;
+                submitSpinner.classList.add('hidden');
+                const config = window.elementSdk?.config || defaultConfig;
+                submitBtnText.textContent = config.submit_button_text || defaultConfig.submit_button_text;
+            }
+        });
+
+        async function init() {
+            if (window.elementSdk) {
+                window.elementSdk.init({
+                    defaultConfig,
+                    onConfigChange,
+                    mapToCapabilities: (config) => ({
+                        recolorables: [
+                            {
+                                get: () => config.background_color || defaultConfig.background_color,
+                                set: (value) => {
+                                    config.background_color = value;
+                                    window.elementSdk.setConfig({ background_color: value });
+                                }
+                            },
+                            {
+                                get: () => config.card_color || defaultConfig.card_color,
+                                set: (value) => {
+                                    config.card_color = value;
+                                    window.elementSdk.setConfig({ card_color: value });
+                                }
+                            },
+                            {
+                                get: () => config.text_color || defaultConfig.text_color,
+                                set: (value) => {
+                                    config.text_color = value;
+                                    window.elementSdk.setConfig({ text_color: value });
+                                }
+                            },
+                            {
+                                get: () => config.primary_button_color || defaultConfig.primary_button_color,
+                                set: (value) => {
+                                    config.primary_button_color = value;
+                                    window.elementSdk.setConfig({ primary_button_color: value });
+                                }
+                            },
+                            {
+                                get: () => config.secondary_button_color || defaultConfig.secondary_button_color,
+                                set: (value) => {
+                                    config.secondary_button_color = value;
+                                    window.elementSdk.setConfig({ secondary_button_color: value });
+                                }
+                            }
+                        ],
+                        borderables: [],
+                        fontEditable: {
+                            get: () => config.font_family || defaultConfig.font_family,
+                            set: (value) => {
+                                config.font_family = value;
+                                window.elementSdk.setConfig({ font_family: value });
+                            }
+                        },
+                        fontSizeable: {
+                            get: () => config.font_size || defaultConfig.font_size,
+                            set: (value) => {
+                                config.font_size = value;
+                                window.elementSdk.setConfig({ font_size: value });
+                            }
+                        }
+                    }),
+                    mapToEditPanelValues: (config) => new Map([
+                        ['page_title', config.page_title || defaultConfig.page_title],
+                        ['description_text', config.description_text || defaultConfig.description_text],
+                        ['submit_button_text', config.submit_button_text || defaultConfig.submit_button_text]
+                    ])
+                });
+            }
+            
+            if (window.dataSdk) {
+                const initResult = await window.dataSdk.init(dataHandler);
+                if (!initResult.isOk) {
+                    showToast('Failed to initialize data storage', 'error');
+                }
+            }
+            
+            await onConfigChange(defaultConfig);
+        }
+
+        init();
+    </script>
+ <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'99ac71cb13d17e91',t:'MTc2MjUxNDQ1OS4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
