@@ -56,6 +56,8 @@
     <div class="text-center mb-8">
      <h1 id="pageTitle" class="text-4xl font-bold mb-3">Azure Document Translator</h1>
      <p id="descriptionText" class="text-xl">Translate documents using Azure AI</p>
+     <div id="sdkStatus" class="mt-4 inline-block px-4 py-2 rounded-lg text-sm font-medium"><span class="inline-block w-2 h-2 rounded-full mr-2" id="sdkStatusDot"></span> <span id="sdkStatusText">Initializing...</span>
+     </div>
     </div>
     <div class="rounded-lg shadow-lg p-8 mb-8">
      <h2 class="text-2xl font-semibold mb-6">New Translation Job</h2>
@@ -247,62 +249,108 @@
             }
         }
 
-        async function simulateAzureTranslation(apiKey, endpoint, sourceUrl, targetUrl, targetLanguage) {
-            // Simulate API call delay
-            await new Promise(resolve => setTimeout(resolve, 2000));
+        async function callAzureTranslation(apiKey, endpoint, sourceUrl, targetUrl, targetLanguage) {
+            // Ensure endpoint ends with /
+            const baseEndpoint = endpoint.endsWith('/') ? endpoint : endpoint + '/';
+            const apiUrl = `${baseEndpoint}translator/text/batch/v1.1/batches`;
             
-            // Simulate translation results
-            const now = new Date();
-            const createdOn = now.toISOString();
-            const lastUpdated = new Date(now.getTime() + 5000).toISOString();
+            // Prepare the request body
+            const requestBody = {
+                inputs: [
+                    {
+                        source: {
+                            sourceUrl: sourceUrl,
+                            storageSource: "AzureBlob"
+                        },
+                        targets: [
+                            {
+                                targetUrl: targetUrl,
+                                language: targetLanguage,
+                                storageSource: "AzureBlob"
+                            }
+                        ]
+                    }
+                ]
+            };
             
-            const mockDocuments = [
-                {
-                    id: 'doc-' + Math.random().toString(36).substr(2, 9),
-                    status: 'Succeeded',
-                    source_document_url: sourceUrl + '/document1.pdf',
-                    translated_document_url: targetUrl.split('?')[0] + '/document1_' + targetLanguage + '.pdf',
-                    translated_to: targetLanguage
+            // Submit the translation job
+            const submitResponse = await fetch(apiUrl, {
+                method: 'POST',
+                headers: {
+                    'Ocp-Apim-Subscription-Key': apiKey,
+                    'Content-Type': 'application/json'
                 },
-                {
-                    id: 'doc-' + Math.random().toString(36).substr(2, 9),
-                    status: 'Succeeded',
-                    source_document_url: sourceUrl + '/document2.docx',
-                    translated_document_url: targetUrl.split('?')[0] + '/document2_' + targetLanguage + '.docx',
-                    translated_to: targetLanguage
+                body: JSON.stringify(requestBody)
+            });
+            
+            if (!submitResponse.ok) {
+                const errorText = await submitResponse.text();
+                throw new Error(`Azure API Error (${submitResponse.status}): ${errorText}`);
+            }
+            
+            // Get the operation location from response headers
+            const operationLocation = submitResponse.headers.get('Operation-Location');
+            if (!operationLocation) {
+                throw new Error('No Operation-Location header received from Azure');
+            }
+            
+            // Poll for job status
+            let jobStatus = 'NotStarted';
+            let statusData = null;
+            let pollCount = 0;
+            const maxPolls = 60; // Poll for up to 5 minutes (60 * 5 seconds)
+            
+            while (pollCount < maxPolls && !['Succeeded', 'Failed', 'Cancelled'].includes(jobStatus)) {
+                await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds between polls
+                
+                const statusResponse = await fetch(operationLocation, {
+                    method: 'GET',
+                    headers: {
+                        'Ocp-Apim-Subscription-Key': apiKey
+                    }
+                });
+                
+                if (!statusResponse.ok) {
+                    throw new Error(`Failed to get job status: ${statusResponse.status}`);
                 }
-            ];
+                
+                statusData = await statusResponse.json();
+                jobStatus = statusData.status;
+                pollCount++;
+            }
             
-            const totalDocs = mockDocuments.length;
-            const succeededDocs = mockDocuments.filter(d => d.status === 'Succeeded').length;
-            const failedDocs = mockDocuments.filter(d => d.status === 'Failed').length;
+            if (!statusData) {
+                throw new Error('No status data received from Azure');
+            }
             
-            let output = `Status: Succeeded\n`;
-            output += `Created on: ${createdOn}\n`;
-            output += `Last updated on: ${lastUpdated}\n`;
+            // Format the output
+            const summary = statusData.summary || {};
+            const totalDocs = summary.total || 0;
+            const succeededDocs = summary.success || 0;
+            const failedDocs = summary.failed || 0;
+            
+            let output = `Status: ${statusData.status}\n`;
+            output += `Created on: ${statusData.createdDateTimeUtc || 'N/A'}\n`;
+            output += `Last updated on: ${statusData.lastActionDateTimeUtc || 'N/A'}\n`;
             output += `Total number of translations on documents: ${totalDocs}\n\n`;
             output += `Of total documents...\n`;
             output += `${failedDocs} failed\n`;
-            output += `${succeededDocs} succeeded\n\n`;
+            output += `${succeededDocs} succeeded\n`;
+            output += `${summary.inProgress || 0} in progress\n`;
+            output += `${summary.notYetStarted || 0} not yet started\n`;
+            output += `${summary.cancelled || 0} cancelled\n\n`;
             
-            mockDocuments.forEach(doc => {
-                output += `Document ID: ${doc.id}\n`;
-                output += `Document status: ${doc.status}\n`;
-                if (doc.status === 'Succeeded') {
-                    output += `Source document location: ${doc.source_document_url}\n`;
-                    output += `Translated document location: ${doc.translated_document_url}\n`;
-                    output += `Translated to language: ${doc.translated_to}\n\n`;
-                } else {
-                    output += `Error Code: ${doc.error?.code || 'N/A'}, Message: ${doc.error?.message || 'N/A'}\n\n`;
-                }
-            });
+            output += `Job ID: ${statusData.id || 'N/A'}\n`;
+            output += `Operation Location: ${operationLocation}\n`;
             
             return {
                 output,
                 totalDocs,
                 succeededDocs,
                 failedDocs,
-                status: 'Succeeded'
+                status: statusData.status,
+                jobId: statusData.id,
+                operationLocation
             };
         }
 
@@ -331,8 +379,8 @@
             const targetLanguage = document.getElementById('targetLanguage').value;
             
             try {
-                // Simulate Azure translation
-                const translationResult = await simulateAzureTranslation(
+                // Call real Azure Document Translation API
+                const translationResult = await callAzureTranslation(
                     apiKey, endpoint, sourceUrl, targetUrl, targetLanguage
                 );
                 
@@ -345,7 +393,7 @@
                 
                 // Save to history
                 const formData = {
-                    id: Date.now().toString(),
+                    id: translationResult.jobId || Date.now().toString(),
                     source_url: sourceUrl,
                     target_url: targetUrl,
                     target_language: targetLanguage,
@@ -359,7 +407,7 @@
                 const result = await window.dataSdk.create(formData);
                 
                 if (result.isOk) {
-                    showToast('Translation completed successfully!', 'success');
+                    showToast('Translation job submitted successfully!', 'success');
                     document.getElementById('translationForm').reset();
                 } else {
                     showToast('Translation completed but failed to save to history', 'error');
@@ -376,93 +424,146 @@
             }
         });
 
+        function updateSDKStatus(elementReady, dataReady, message) {
+            const statusDiv = document.getElementById('sdkStatus');
+            const statusDot = document.getElementById('sdkStatusDot');
+            const statusText = document.getElementById('sdkStatusText');
+            
+            if (elementReady && dataReady) {
+                statusDiv.style.backgroundColor = '#d1fae5';
+                statusDiv.style.color = '#065f46';
+                statusDot.style.backgroundColor = '#10b981';
+                statusText.textContent = '✓ SDKs Ready';
+            } else if (!elementReady || !dataReady) {
+                statusDiv.style.backgroundColor = '#fee2e2';
+                statusDiv.style.color = '#991b1b';
+                statusDot.style.backgroundColor = '#ef4444';
+                statusText.textContent = message || '✗ SDK Error';
+            } else {
+                statusDiv.style.backgroundColor = '#fef3c7';
+                statusDiv.style.color = '#92400e';
+                statusDot.style.backgroundColor = '#f59e0b';
+                statusText.textContent = message || 'Loading...';
+            }
+        }
+
         async function init() {
+            updateSDKStatus(false, false, 'Waiting for SDKs...');
+            
             // Wait for SDKs to be available
             let retries = 0;
             while ((!window.elementSdk || !window.dataSdk) && retries < 50) {
                 await new Promise(resolve => setTimeout(resolve, 100));
                 retries++;
+                
+                if (retries % 10 === 0) {
+                    updateSDKStatus(
+                        !!window.elementSdk, 
+                        !!window.dataSdk, 
+                        `Loading... (${retries * 100}ms) - Element: ${!!window.elementSdk}, Data: ${!!window.dataSdk}`
+                    );
+                }
             }
             
+            let elementReady = false;
+            let dataReady = false;
+            
             if (window.elementSdk) {
-                window.elementSdk.init({
-                    defaultConfig,
-                    onConfigChange,
-                    mapToCapabilities: (config) => ({
-                        recolorables: [
-                            {
-                                get: () => config.background_color || defaultConfig.background_color,
+                try {
+                    window.elementSdk.init({
+                        defaultConfig,
+                        onConfigChange,
+                        mapToCapabilities: (config) => ({
+                            recolorables: [
+                                {
+                                    get: () => config.background_color || defaultConfig.background_color,
+                                    set: (value) => {
+                                        config.background_color = value;
+                                        window.elementSdk.setConfig({ background_color: value });
+                                    }
+                                },
+                                {
+                                    get: () => config.card_color || defaultConfig.card_color,
+                                    set: (value) => {
+                                        config.card_color = value;
+                                        window.elementSdk.setConfig({ card_color: value });
+                                    }
+                                },
+                                {
+                                    get: () => config.text_color || defaultConfig.text_color,
+                                    set: (value) => {
+                                        config.text_color = value;
+                                        window.elementSdk.setConfig({ text_color: value });
+                                    }
+                                },
+                                {
+                                    get: () => config.primary_button_color || defaultConfig.primary_button_color,
+                                    set: (value) => {
+                                        config.primary_button_color = value;
+                                        window.elementSdk.setConfig({ primary_button_color: value });
+                                    }
+                                },
+                                {
+                                    get: () => config.secondary_button_color || defaultConfig.secondary_button_color,
+                                    set: (value) => {
+                                        config.secondary_button_color = value;
+                                        window.elementSdk.setConfig({ secondary_button_color: value });
+                                    }
+                                }
+                            ],
+                            borderables: [],
+                            fontEditable: {
+                                get: () => config.font_family || defaultConfig.font_family,
                                 set: (value) => {
-                                    config.background_color = value;
-                                    window.elementSdk.setConfig({ background_color: value });
+                                    config.font_family = value;
+                                    window.elementSdk.setConfig({ font_family: value });
                                 }
                             },
-                            {
-                                get: () => config.card_color || defaultConfig.card_color,
+                            fontSizeable: {
+                                get: () => config.font_size || defaultConfig.font_size,
                                 set: (value) => {
-                                    config.card_color = value;
-                                    window.elementSdk.setConfig({ card_color: value });
-                                }
-                            },
-                            {
-                                get: () => config.text_color || defaultConfig.text_color,
-                                set: (value) => {
-                                    config.text_color = value;
-                                    window.elementSdk.setConfig({ text_color: value });
-                                }
-                            },
-                            {
-                                get: () => config.primary_button_color || defaultConfig.primary_button_color,
-                                set: (value) => {
-                                    config.primary_button_color = value;
-                                    window.elementSdk.setConfig({ primary_button_color: value });
-                                }
-                            },
-                            {
-                                get: () => config.secondary_button_color || defaultConfig.secondary_button_color,
-                                set: (value) => {
-                                    config.secondary_button_color = value;
-                                    window.elementSdk.setConfig({ secondary_button_color: value });
+                                    config.font_size = value;
+                                    window.elementSdk.setConfig({ font_size: value });
                                 }
                             }
-                        ],
-                        borderables: [],
-                        fontEditable: {
-                            get: () => config.font_family || defaultConfig.font_family,
-                            set: (value) => {
-                                config.font_family = value;
-                                window.elementSdk.setConfig({ font_family: value });
-                            }
-                        },
-                        fontSizeable: {
-                            get: () => config.font_size || defaultConfig.font_size,
-                            set: (value) => {
-                                config.font_size = value;
-                                window.elementSdk.setConfig({ font_size: value });
-                            }
-                        }
-                    }),
-                    mapToEditPanelValues: (config) => new Map([
-                        ['page_title', config.page_title || defaultConfig.page_title],
-                        ['description_text', config.description_text || defaultConfig.description_text],
-                        ['submit_button_text', config.submit_button_text || defaultConfig.submit_button_text]
-                    ])
-                });
+                        }),
+                        mapToEditPanelValues: (config) => new Map([
+                            ['page_title', config.page_title || defaultConfig.page_title],
+                            ['description_text', config.description_text || defaultConfig.description_text],
+                            ['submit_button_text', config.submit_button_text || defaultConfig.submit_button_text]
+                        ])
+                    });
+                    elementReady = true;
+                } catch (error) {
+                    updateSDKStatus(false, false, `Element SDK Error: ${error.message}`);
+                }
+            } else {
+                updateSDKStatus(false, false, 'Element SDK not found');
             }
             
             if (window.dataSdk) {
-                const initResult = await window.dataSdk.init(dataHandler);
-                if (!initResult.isOk) {
-                    showToast('Failed to initialize data storage', 'error');
+                try {
+                    const initResult = await window.dataSdk.init(dataHandler);
+                    if (initResult.isOk) {
+                        dataReady = true;
+                    } else {
+                        updateSDKStatus(elementReady, false, 'Data SDK init failed');
+                        showToast('Failed to initialize data storage', 'error');
+                    }
+                } catch (error) {
+                    updateSDKStatus(elementReady, false, `Data SDK Error: ${error.message}`);
                 }
             } else {
+                updateSDKStatus(elementReady, false, 'Data SDK not found after 5 seconds');
                 showToast('Data storage not available', 'error');
             }
+            
+            updateSDKStatus(elementReady, dataReady, elementReady && dataReady ? '✓ SDKs Ready' : 'SDK initialization incomplete');
             
             await onConfigChange(defaultConfig);
         }
 
         init();
     </script>
- <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'99ac864c76ecb294',t:'MTc2MjUxNTI5OS4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+ <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'99ac9a0492ee7f7c',t:'MTc2MjUxNjEwNy4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
